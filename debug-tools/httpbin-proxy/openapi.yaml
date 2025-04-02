@@ -1,0 +1,87 @@
+openapi: 3.0.3
+info:
+  title: HttpBin Proxy
+  version: 1.0.0
+servers:
+  - url: http://localhost:8000
+    description: Local server
+paths:
+  /:
+    get:
+      responses:
+        "200":
+          description: ""
+    post:
+    
+      requestBody:
+        required: false
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        "200":
+          description: ""
+    put:
+      requestBody:
+        required: false
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        "200":
+          description: ""
+    delete:
+      responses:
+        "200":
+          description: ""
+    patch:
+      requestBody:
+        required: false
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        "200":
+          description: ""
+  /pet:
+    get:
+      responses:
+        "200":
+          description: ""
+    post:
+      requestBody:
+        required: false
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        "200":
+          description: ""
+    put:
+      requestBody:
+        required: false
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        "200":
+          description: ""
+    delete:
+      responses:
+        "200":
+          description: ""
+    patch:
+      requestBody:
+        required: false
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        "200":
+          description: ""
