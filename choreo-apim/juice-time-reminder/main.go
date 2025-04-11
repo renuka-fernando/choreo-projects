@@ -8,8 +8,8 @@ import (
 	"os"
 )
 
-const MESSAGE = `Hey _APIM_ Team!
-*It’s Juice Time!* 🍹🍹🍹
+const MESSAGE = `Hey CHOREO_APIM Team!
+*It’s Juice Time! Thanks for the awesome work — you’ve earned it!* 🧃🎉 🍹🍹🍹
   1. Take a break 🔔
   2. Refresh yourself 💧
   3. Get back recharged! ⚡️
