@@ -1,3 +1,3 @@
-module juice-time-reminder
+module awurudu-greeting
 
 go 1.24.0
