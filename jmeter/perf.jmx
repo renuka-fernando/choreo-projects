@@ -82,6 +82,11 @@
           </ResponseAssertion>
           <hashTree/>
         </hashTree>
+        <ConstantThroughputTimer guiclass="TestBeanGUI" testclass="ConstantThroughputTimer" testname="Constant Throughput Timer" enabled="true">
+          <intProp name="calcMode">1</intProp>
+          <stringProp name="throughput">${__P(rpm,60)}</stringProp>
+        </ConstantThroughputTimer>
+        <hashTree/>
       </hashTree>
     </hashTree>
   </hashTree>
