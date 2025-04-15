@@ -1,6 +1,7 @@
 use hyper::{
     body::Body,
     client::{Client, HttpConnector},
+    header::{HeaderValue, HOST},
     server::conn::AddrStream,
     service::{make_service_fn, service_fn},
     Request, Response, Server, Uri,
@@ -13,7 +14,7 @@ use std::{
     convert::Infallible,
     fs::File,
     io::BufReader,
-    net::{SocketAddr},
+    net::SocketAddr,
     sync::Arc,
     time::Instant,
 };
@@ -25,11 +26,21 @@ use tracing_subscriber::EnvFilter;
 
 static UPSTREAM_URL: Lazy<String> = Lazy::new(|| {
     dotenv().ok();
-    std::env::var("UPSTREAM_URL").unwrap_or_else(|_| "https://httpbin.org/anything".to_string())
+    std::env::var("UPSTREAM_URL").expect("Missing UPSTREAM_URL")
 });
+
+static UPSTREAM_HOST: Lazy<String> = Lazy::new(|| {
+    Uri::try_from(UPSTREAM_URL.as_str())
+        .expect("Invalid UPSTREAM_URL")
+        .host()
+        .expect("UPSTREAM_URL must include a host")
+        .to_string()
+});
+
 static CERT_PATH: Lazy<Option<String>> = Lazy::new(|| {
     std::env::var("CERT_PATH").ok()
 });
+
 static LOG_GUARD: OnceCell<tracing_appender::non_blocking::WorkerGuard> = OnceCell::new();
 
 struct AppState {
@@ -46,7 +57,7 @@ fn init_logging() {
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
         .with_thread_ids(true)
         .with_target(false)
-        .with_ansi(false) // Disable colored output
+        .with_ansi(false)
         .init();
 }
 
@@ -146,6 +157,13 @@ async fn proxy_handler(
         .unwrap();
 
     parts.uri = target_uri;
+
+    // Replace Host header with upstream host
+    parts.headers.insert(
+        HOST,
+        HeaderValue::from_str(&UPSTREAM_HOST).expect("Invalid host header value"),
+    );
+
     let new_req = Request::from_parts(parts, body);
 
     let result = state.client.request(new_req).await;
