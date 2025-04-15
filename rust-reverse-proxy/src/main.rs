@@ -46,6 +46,7 @@ fn init_logging() {
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
         .with_thread_ids(true)
         .with_target(false)
+        .with_ansi(false) // Disable colors
         .init();
 }
 
