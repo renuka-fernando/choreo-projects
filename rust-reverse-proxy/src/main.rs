@@ -1,59 +1,69 @@
 use hyper::{
-    Body, Client, Request, Response, Server, Uri,
-    service::{make_service_fn, service_fn},
+    body::Body,
+    client::{Client, HttpConnector},
     server::conn::AddrStream,
+    service::{make_service_fn, service_fn},
+    Request, Response, Server, Uri,
 };
-use std::{convert::Infallible, fs::File, io::BufReader, net::SocketAddr, sync::Arc, time::Instant};
 use hyper_rustls::HttpsConnectorBuilder;
 use rustls::{Certificate, ClientConfig, RootCertStore};
 use rustls_pemfile::certs;
 use rustls_native_certs;
+use std::{
+    convert::Infallible,
+    fs::File,
+    io::{BufReader, stdout},
+    net::SocketAddr,
+    sync::Arc,
+    time::Instant,
+};
 use chrono::Local;
-use hyper::client::HttpConnector;
 use dotenv::dotenv;
-use std::env;
-use once_cell::sync::Lazy;
-use tracing::{info, error};
-use tracing_subscriber;
+use once_cell::sync::{Lazy, OnceCell};
+use tracing::{error, info};
+use tracing_appender::non_blocking;
+use tracing_subscriber::{EnvFilter};
 
 static UPSTREAM_URL: Lazy<String> = Lazy::new(|| {
     dotenv().ok();
-    env::var("UPSTREAM_URL").unwrap_or_else(|_| "https://localhost:8443".to_string())
+    std::env::var("UPSTREAM_URL").unwrap_or_else(|_| "https://localhost:8443".to_string())
 });
+static CERT_PATH: Lazy<Option<String>> = Lazy::new(|| {
+    std::env::var("CERT_PATH").ok()
+});
+static LOG_GUARD: OnceCell<tracing_appender::non_blocking::WorkerGuard> = OnceCell::new();
 
-static CERT_PATH: Lazy<Option<String>> = Lazy::new(|| env::var("CERT_PATH").ok());
-
-#[derive(Clone)]
 struct AppState {
     client: Client<hyper_rustls::HttpsConnector<HttpConnector>>,
 }
 
-fn load_certs() -> Option<Vec<Certificate>> {
-    let Some(path) = CERT_PATH.as_ref() else {
-        return None;
-    };
+fn init_logging() {
+    let (non_blocking_writer, guard) = non_blocking(stdout()); // Log to stdout
+    LOG_GUARD.set(guard).unwrap(); // Prevent dropped logs
 
-    let file = File::open(path).unwrap_or_else(|e| {
-        panic!("Failed to open cert file at {}: {}", path, e);
-    });
-
-    let mut reader = BufReader::new(file);
-    let certs = certs(&mut reader).expect("Failed to parse PEM file");
-
-    Some(certs.into_iter().map(Certificate).collect())
+    tracing_subscriber::fmt()
+        .with_writer(non_blocking_writer)
+        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
+        .with_thread_ids(true)
+        .with_target(false)
+        .init();
 }
 
-fn make_https_client(certs: Option<Vec<Certificate>>) -> Client<hyper_rustls::HttpsConnector<HttpConnector>> {
+fn make_https_client_with_custom_cert() -> Client<hyper_rustls::HttpsConnector<HttpConnector>> {
     let mut root_store = RootCertStore::empty();
 
-    if let Some(cert_list) = certs {
-        for cert in &cert_list {
-            root_store.add(cert).expect("Invalid certificate format");
+    if let Some(ref cert_path) = *CERT_PATH {
+        let file = File::open(cert_path).expect("Failed to open cert file");
+        let mut reader = BufReader::new(file);
+        let certs = certs(&mut reader).expect("Failed to parse PEM file");
+        for cert in certs {
+            root_store
+                .add(&Certificate(cert))
+                .expect("Invalid certificate format");
         }
     } else {
         let native_certs = rustls_native_certs::load_native_certs()
-            .expect("Failed to load platform certificates");
-
+            .expect("Could not load platform certs");
         for cert in native_certs {
             root_store.add(&Certificate(cert.0)).unwrap();
         }
@@ -72,30 +82,34 @@ fn make_https_client(certs: Option<Vec<Certificate>>) -> Client<hyper_rustls::Ht
 
     Client::builder()
         .pool_max_idle_per_host(64)
-        .build(https)
+        .build::<_, hyper::Body>(https)
 }
 
 #[tokio::main]
 async fn main() {
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
-
-    let certs = load_certs();
-    let client = make_https_client(certs);
-    let state = Arc::new(AppState { client });
+    dotenv().ok();
+    init_logging();
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    let client = make_https_client_with_custom_cert();
+    let state = Arc::new(AppState { client });
 
     let make_service = make_service_fn(move |_conn: &AddrStream| {
-        let state = state.clone();
+        let state = Arc::clone(&state);
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
-                proxy_handler(req, state.clone())
+                proxy_handler(req, Arc::clone(&state))
             }))
         }
     });
 
-    info!(%addr, upstream = %UPSTREAM_URL.as_str(), cert_path = ?CERT_PATH.as_deref().unwrap_or("<system default>"), "Reverse proxy starting");
+    info!("Reverse proxy listening on http://{}", addr);
+    info!("Upstream: {}", UPSTREAM_URL.as_str());
+    if let Some(path) = CERT_PATH.as_ref() {
+        info!("Custom cert path: {}", path);
+    } else {
+        info!("Using OS certificate store");
+    }
 
     let server = Server::bind(&addr)
         .tcp_nodelay(true)
@@ -116,8 +130,8 @@ async fn proxy_handler(
     let (mut parts, body) = req.into_parts();
     let method = parts.method.clone();
     let uri = parts.uri.clone();
-    let path = uri.path();
-    let query = uri.query().unwrap_or("");
+    let path = uri.path().to_string();
+    let query = uri.query().unwrap_or("").to_string();
 
     let target_uri = format!("{}{}", UPSTREAM_URL.as_str(), uri)
         .parse::<Uri>()
@@ -128,31 +142,43 @@ async fn proxy_handler(
 
     let result = state.client.request(new_req).await;
     let duration = start.elapsed().as_millis();
+    let timestamp = now.format("%Y-%m-%d %H:%M:%S").to_string();
+    let method = method.to_string();
+    let status = result
+        .as_ref()
+        .map(|res| res.status().as_u16())
+        .unwrap_or(0);
+    let error = result
+        .as_ref()
+        .err()
+        .map(|e| e.to_string());
 
-    match &result {
-        Ok(response) => {
-            info!(
-                timestamp = %now.format("%Y-%m-%d %H:%M:%S"),
-                %method,
-                path = %path,
-                query = %query,
-                status = %response.status(),
-                elapsed_ms = %duration,
-                "Request proxied"
-            );
+    tokio::spawn(async move {
+        match error {
+            Some(err) => {
+                error!(
+                    %timestamp,
+                    %method,
+                    path = %path,
+                    query = %query,
+                    %err,
+                    elapsed_ms = %duration,
+                    "Proxy error"
+                );
+            }
+            None => {
+                info!(
+                    %timestamp,
+                    %method,
+                    path = %path,
+                    query = %query,
+                    status = %status,
+                    elapsed_ms = %duration,
+                    "Request proxied"
+                );
+            }
         }
-        Err(e) => {
-            error!(
-                timestamp = %now.format("%Y-%m-%d %H:%M:%S"),
-                %method,
-                path = %path,
-                query = %query,
-                error = %e,
-                elapsed_ms = %duration,
-                "Proxy error"
-            );
-        }
-    }
+    });
 
     result
 }
