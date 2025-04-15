@@ -26,11 +26,12 @@ docker run --rm --name https-netty \
 
 ```shell
 docker run --rm --name https-proxy -p 8000:8000 \
-    --memory="10m" --cpus="0.02" \
+    --memory="6m" \
+    --cpu-period="200000" --cpu-quota="1000" \
     -v ./cacert.pem:/etc/ssl/certs/netty-cert.pem \
     -e TARGET_URL=https://https-netty:8688/test \
     -e GOGC=off \
-    -e GOMEMLIMIT=10MiB \
+    -e GOMEMLIMIT=6MiB \
     --network my-network \
     renukafernando/httpbin-proxy:v1 \
     -upstream-tls \
@@ -41,7 +42,8 @@ docker run --rm --name https-proxy -p 8000:8000 \
 
 ```shell
 docker run --rm --name rust -p 3000:3000 \
-    --memory="10m" --cpus="0.02" \
+    --memory="6m" \
+    --cpu-period="200000" --cpu-quota="1000" \
     -v ./cacert.pem:/etc/ssl/certs/netty-cert.pem \
     --network my-network \
     -e UPSTREAM_URL=https://https-netty:8688/test \
