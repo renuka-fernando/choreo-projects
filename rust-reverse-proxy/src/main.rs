@@ -12,21 +12,20 @@ use rustls_native_certs;
 use std::{
     convert::Infallible,
     fs::File,
-    io::{BufReader, stdout},
-    net::SocketAddr,
+    io::BufReader,
+    net::{SocketAddr},
     sync::Arc,
     time::Instant,
 };
-use chrono::Local;
 use dotenv::dotenv;
 use once_cell::sync::{Lazy, OnceCell};
 use tracing::{error, info};
 use tracing_appender::non_blocking;
-use tracing_subscriber::{EnvFilter};
+use tracing_subscriber::EnvFilter;
 
 static UPSTREAM_URL: Lazy<String> = Lazy::new(|| {
     dotenv().ok();
-    std::env::var("UPSTREAM_URL").unwrap_or_else(|_| "https://localhost:8443".to_string())
+    std::env::var("UPSTREAM_URL").unwrap_or_else(|_| "https://httpbin.org/anything".to_string())
 });
 static CERT_PATH: Lazy<Option<String>> = Lazy::new(|| {
     std::env::var("CERT_PATH").ok()
@@ -38,15 +37,16 @@ struct AppState {
 }
 
 fn init_logging() {
-    let (non_blocking_writer, guard) = non_blocking(stdout()); // Log to stdout
-    LOG_GUARD.set(guard).unwrap(); // Prevent dropped logs
+    let stdout = std::io::stdout;
+    let (non_blocking_writer, guard) = non_blocking(stdout());
+    LOG_GUARD.set(guard).unwrap();
 
     tracing_subscriber::fmt()
         .with_writer(non_blocking_writer)
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
         .with_thread_ids(true)
         .with_target(false)
-        .with_ansi(false) // Disable colors
+        .with_ansi(false) // Disable colored output
         .init();
 }
 
@@ -54,7 +54,7 @@ fn make_https_client_with_custom_cert() -> Client<hyper_rustls::HttpsConnector<H
     let mut root_store = RootCertStore::empty();
 
     if let Some(ref cert_path) = *CERT_PATH {
-        let file = File::open(cert_path).expect("Failed to open cert file");
+        let file = File::open(cert_path).expect(&format!("Failed to open cert file: {}", cert_path));
         let mut reader = BufReader::new(file);
         let certs = certs(&mut reader).expect("Failed to parse PEM file");
         for cert in certs {
@@ -95,11 +95,13 @@ async fn main() {
     let client = make_https_client_with_custom_cert();
     let state = Arc::new(AppState { client });
 
-    let make_service = make_service_fn(move |_conn: &AddrStream| {
+    let make_service = make_service_fn(move |conn: &AddrStream| {
         let state = Arc::clone(&state);
+        let remote_addr = conn.remote_addr();
+
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
-                proxy_handler(req, Arc::clone(&state))
+                proxy_handler(req, Arc::clone(&state), remote_addr)
             }))
         }
     });
@@ -124,15 +126,20 @@ async fn main() {
 async fn proxy_handler(
     req: Request<Body>,
     state: Arc<AppState>,
+    remote_addr: SocketAddr,
 ) -> Result<Response<Body>, hyper::Error> {
     let start = Instant::now();
-    let now = Local::now();
 
     let (mut parts, body) = req.into_parts();
     let method = parts.method.clone();
     let uri = parts.uri.clone();
     let path = uri.path().to_string();
-    let query = uri.query().unwrap_or("").to_string();
+    let host = parts
+        .headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
 
     let target_uri = format!("{}{}", UPSTREAM_URL.as_str(), uri)
         .parse::<Uri>()
@@ -143,8 +150,6 @@ async fn proxy_handler(
 
     let result = state.client.request(new_req).await;
     let duration = start.elapsed().as_millis();
-    let timestamp = now.format("%Y-%m-%d %H:%M:%S").to_string();
-    let method = method.to_string();
     let status = result
         .as_ref()
         .map(|res| res.status().as_u16())
@@ -158,10 +163,10 @@ async fn proxy_handler(
         match error {
             Some(err) => {
                 error!(
-                    %timestamp,
                     %method,
                     path = %path,
-                    query = %query,
+                    host = %host,
+                    remote_addr = %remote_addr,
                     %err,
                     elapsed_ms = %duration,
                     "Proxy error"
@@ -169,10 +174,10 @@ async fn proxy_handler(
             }
             None => {
                 info!(
-                    %timestamp,
                     %method,
                     path = %path,
-                    query = %query,
+                    host = %host,
+                    remote_addr = %remote_addr,
                     status = %status,
                     elapsed_ms = %duration,
                     "Request proxied"

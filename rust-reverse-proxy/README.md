@@ -9,6 +9,11 @@ rustc 1.84.0 (9fc6b4312 2025-01-07)
 
 #### Local Run
 
+Set worker thread count
+```shell
+export TOKIO_WORKER_THREADS=4
+```
+
 ```shell
 cargo run
 ```

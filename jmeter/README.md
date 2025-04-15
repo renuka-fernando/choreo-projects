@@ -41,7 +41,7 @@ docker run --rm --name https-proxy -p 8000:8000 \
 
 ```shell
 docker run --rm --name rust -p 3000:3000 \
-    --memory="10m" --cpus="0.1" \
+    --memory="10m" --cpus="0.02" \
     -v ./cacert.pem:/etc/ssl/certs/netty-cert.pem \
     --network my-network \
     -e UPSTREAM_URL=https://https-netty:8688/test \
