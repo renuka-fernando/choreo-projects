@@ -28,9 +28,10 @@ docker run --rm --name https-netty \
 docker run --rm --name https-proxy -p 8000:8000 \
     --memory="10m" --cpus="0.02" \
     -v ./cacert.pem:/etc/ssl/certs/netty-cert.pem \
-    -e TARGET_URL=https://host.docker.internal:8688/test \
+    -e TARGET_URL=https://https-netty:8688/test \
     -e GOGC=off \
     -e GOMEMLIMIT=10MiB \
+    --network my-network \
     renukafernando/httpbin-proxy:v1 \
     -upstream-tls \
     -upstream-cacert /etc/ssl/certs/netty-cert.pem
@@ -40,7 +41,7 @@ docker run --rm --name https-proxy -p 8000:8000 \
 
 ```shell
 docker run --rm --name rust -p 3000:3000 \
-    --memory="10m" --cpus="0.02" \
+    --memory="10m" --cpus="0.1" \
     -v ./cacert.pem:/etc/ssl/certs/netty-cert.pem \
     --network my-network \
     -e UPSTREAM_URL=https://https-netty:8688/test \
@@ -63,7 +64,7 @@ jmeter -n -t "perf.jmx" \
     -Jduration="660" \
     -Jhost="localhost" \
     -JhostHeader=localhost \
-    -Jport=8000 \
+    -Jport=3000 \
     -Jpath=/echo/1.0.0/ \
     -Jpayload="1KB.json" \
     -Jresponse_size="1024B" \

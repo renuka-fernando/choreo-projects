@@ -13,20 +13,20 @@ use hyper::client::HttpConnector;
 use dotenv::dotenv;
 use std::env;
 use once_cell::sync::Lazy;
-use tokio::sync::RwLock;
+use tracing::{info, error};
+use tracing_subscriber;
 
-// Load config from env or use defaults
 static UPSTREAM_URL: Lazy<String> = Lazy::new(|| {
     dotenv().ok();
-    env::var("UPSTREAM_URL").unwrap_or_else(|_| "https://httpbin.org/anything".to_string())
+    env::var("UPSTREAM_URL").unwrap_or_else(|_| "https://localhost:8443".to_string())
 });
 
-static CERT_PATH: Lazy<Option<String>> = Lazy::new(|| {
-    env::var("CERT_PATH").ok()
-});
+static CERT_PATH: Lazy<Option<String>> = Lazy::new(|| env::var("CERT_PATH").ok());
 
-// Store certs (if any) globally
-static GLOBAL_CERTS: Lazy<Arc<RwLock<Option<Vec<Certificate>>>>> = Lazy::new(|| Arc::new(RwLock::new(None)));
+#[derive(Clone)]
+struct AppState {
+    client: Client<hyper_rustls::HttpsConnector<HttpConnector>>,
+}
 
 fn load_certs() -> Option<Vec<Certificate>> {
     let Some(path) = CERT_PATH.as_ref() else {
@@ -43,11 +43,11 @@ fn load_certs() -> Option<Vec<Certificate>> {
     Some(certs.into_iter().map(Certificate).collect())
 }
 
-fn make_https_client_with_custom_cert(certs: Option<&[Certificate]>) -> Client<hyper_rustls::HttpsConnector<HttpConnector>> {
+fn make_https_client(certs: Option<Vec<Certificate>>) -> Client<hyper_rustls::HttpsConnector<HttpConnector>> {
     let mut root_store = RootCertStore::empty();
 
     if let Some(cert_list) = certs {
-        for cert in cert_list {
+        for cert in &cert_list {
             root_store.add(cert).expect("Invalid certificate format");
         }
     } else {
@@ -70,94 +70,89 @@ fn make_https_client_with_custom_cert(certs: Option<&[Certificate]>) -> Client<h
         .enable_http1()
         .build();
 
-    Client::builder().build(https)
+    Client::builder()
+        .pool_max_idle_per_host(64)
+        .build(https)
 }
 
 #[tokio::main]
 async fn main() {
+    // Initialize tracing
+    tracing_subscriber::fmt::init();
+
     let certs = load_certs();
-    {
-        let mut certs_lock = GLOBAL_CERTS.write().await;
-        *certs_lock = certs;
-    }
+    let client = make_https_client(certs);
+    let state = Arc::new(AppState { client });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
 
-    let make_service = make_service_fn(|_conn: &AddrStream| async {
-        Ok::<_, Infallible>(service_fn(proxy_handler))
+    let make_service = make_service_fn(move |_conn: &AddrStream| {
+        let state = state.clone();
+        async move {
+            Ok::<_, Infallible>(service_fn(move |req| {
+                proxy_handler(req, state.clone())
+            }))
+        }
     });
 
-    println!("Reverse proxy listening on http://{}", addr);
-    println!("Upstream: {}", UPSTREAM_URL.as_str());
-    println!(
-        "Cert path: {}",
-        CERT_PATH.as_deref().unwrap_or("<system default>")
-    );
+    info!(%addr, upstream = %UPSTREAM_URL.as_str(), cert_path = ?CERT_PATH.as_deref().unwrap_or("<system default>"), "Reverse proxy starting");
 
-    let server = Server::bind(&addr).serve(make_service);
+    let server = Server::bind(&addr)
+        .tcp_nodelay(true)
+        .serve(make_service);
+
     if let Err(e) = server.await {
-        eprintln!("Server error: {}", e);
+        error!("Server error: {}", e);
     }
 }
 
-async fn proxy_handler(req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
-    let certs = GLOBAL_CERTS.read().await;
-    let client = make_https_client_with_custom_cert(certs.as_deref());
-
+async fn proxy_handler(
+    req: Request<Body>,
+    state: Arc<AppState>,
+) -> Result<Response<Body>, hyper::Error> {
     let start = Instant::now();
     let now = Local::now();
-    let method = req.method().clone();
-    let uri = req.uri().clone();
-    let path = uri.path().to_string();
-    let query = uri.query().unwrap_or("").to_string();
 
-    // Add foo=bar to query
-    let original_path_and_query = uri.path_and_query().map(|x| x.as_str()).unwrap_or("/");
-    let new_path_and_query = if original_path_and_query.contains('?') {
-        format!("{}&foo=bar", original_path_and_query)
-    } else {
-        format!("{}?foo=bar", original_path_and_query)
-    };
-    let target_uri = format!("{}{}", UPSTREAM_URL.as_str(), new_path_and_query)
+    let (mut parts, body) = req.into_parts();
+    let method = parts.method.clone();
+    let uri = parts.uri.clone();
+    let path = uri.path();
+    let query = uri.query().unwrap_or("");
+
+    let target_uri = format!("{}{}", UPSTREAM_URL.as_str(), uri)
         .parse::<Uri>()
         .unwrap();
 
-    let (mut parts, body) = req.into_parts();
     parts.uri = target_uri;
-    parts.headers.insert("x-custom-header", "my-value".parse().unwrap());
     let new_req = Request::from_parts(parts, body);
 
-    let result = client.request(new_req).await;
+    let result = state.client.request(new_req).await;
     let duration = start.elapsed().as_millis();
 
     match &result {
         Ok(response) => {
-            println!(
-                "[{}] [{}] {}{} -> {} ({} ms)",
-                now.format("%Y-%m-%d %H:%M:%S"),
-                method,
-                path,
-                if query.is_empty() { "".to_string() } else { format!("?{}", query) },
-                response.status(),
-                duration
+            info!(
+                timestamp = %now.format("%Y-%m-%d %H:%M:%S"),
+                %method,
+                path = %path,
+                query = %query,
+                status = %response.status(),
+                elapsed_ms = %duration,
+                "Request proxied"
             );
         }
         Err(e) => {
-            eprintln!(
-                "[{}] [{}] {}{} -> ERROR: {} ({} ms)",
-                now.format("%Y-%m-%d %H:%M:%S"),
-                method,
-                path,
-                if query.is_empty() { "".to_string() } else { format!("?{}", query) },
-                e,
-                duration
+            error!(
+                timestamp = %now.format("%Y-%m-%d %H:%M:%S"),
+                %method,
+                path = %path,
+                query = %query,
+                error = %e,
+                elapsed_ms = %duration,
+                "Proxy error"
             );
         }
     }
 
-    let mut res = result?;
-    res.headers_mut()
-        .insert("x-proxy-response", "injected-by-proxy".parse().unwrap());
-
-    Ok(res)
+    result
 }
