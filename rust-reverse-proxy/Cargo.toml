@@ -1,0 +1,17 @@
+[package]
+name = "rust-reverse-proxy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "0.14", features = ["full"] }
+hyper-rustls = "0.24"
+rustls = "0.21"
+rustls-pemfile = "1.0"
+tokio-rustls = "0.24"
+webpki-roots = "0.25"
+chrono = "0.4"
+dotenv = "0.15"
+once_cell = "1.18"
+rustls-native-certs = "0.6"
