@@ -51,6 +51,18 @@ docker run --rm --name rust -p 3000:3000 \
     renukafernando/rust-reverse-proxy:v1
 ```
 
+#### Go FastHTTP Reverse Proxy
+
+```shell
+docker run --rm --name fasthttp-proxy -p 8080:8080 \
+    --memory="10m" \
+    --cpus="0.01" \
+    -v ./cacert.pem:/etc/ssl/certs/netty-cert.pem \
+    -v ./config.yaml:/etc/proxy/config.yaml \
+    --network my-network \
+    renukafernando/go-fasthttp-reverse-proxy:v1
+```
+
 #### Run JMeter
 
 ```shell
@@ -66,7 +78,7 @@ jmeter -n -t "perf.jmx" \
     -Jduration="660" \
     -Jhost="localhost" \
     -JhostHeader=localhost \
-    -Jport=3000 \
+    -Jport=8080 \
     -Jpath=/echo/1.0.0/ \
     -Jpayload="1KB.json" \
     -Jresponse_size="1024B" \
