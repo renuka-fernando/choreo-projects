@@ -1,0 +1,10 @@
+[server]
+host = "0.0.0.0"
+port = 9090
+
+[upstream]
+url = "https://https-netty:8688/foo"
+ca_cert_path = "/etc/ssl/certs/netty-cert.pem"
+
+[logging]
+level = "info" 

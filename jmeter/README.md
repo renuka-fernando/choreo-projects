@@ -51,6 +51,18 @@ docker run --rm --name rust -p 3000:3000 \
     renukafernando/rust-reverse-proxy:v1
 ```
 
+#### Rust Actix Reverse Proxy
+
+```shell
+docker run --rm --name rust -p 9090:9090 \
+    --memory="6m" \
+    --cpu-period="200000" --cpu-quota="1000" \
+    -v ./cacert.pem:/etc/ssl/certs/netty-cert.pem \
+    -v ./config.toml:/app/config.toml \
+    --network my-network \
+    renukafernando/rust-actix-reverse-proxy:v1
+```
+
 #### Go FastHTTP Reverse Proxy
 
 ```shell

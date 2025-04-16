@@ -1,0 +1,23 @@
+[package]
+name = "rust-actix-reverse-proxy"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A lightweight reverse proxy built with Actix Web"
+
+[dependencies]
+actix-web = "4.4"
+actix-http = "3.5"
+tokio = { version = "1.36", features = ["full"] }
+reqwest = { version = "0.11", features = ["rustls-tls", "json"], default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+config = "0.14"
+env_logger = "0.11"
+log = "0.4"
+chrono = "0.4"
+futures = "0.3"
+rustls = "0.22"
+rustls-native-certs = "0.7"
+rustls-pemfile = "2.0"
+url = "2.5"
