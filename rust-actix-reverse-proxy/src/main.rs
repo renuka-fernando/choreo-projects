@@ -12,6 +12,8 @@ use rustls_native_certs::load_native_certs;
 use serde::Deserialize;
 use std::time::Instant;
 use url::Url;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 #[derive(Debug, Deserialize)]
 struct Config {
@@ -60,6 +62,7 @@ struct ProxyClient {
     client: Client,
     upstream_url: String,
     upstream_host: String,
+    connection_pool: Arc<Semaphore>,
 }
 
 impl ProxyClient {
@@ -115,22 +118,31 @@ impl ProxyClient {
 
         debug!("Total certificates in root store: {}", root_store.len());
 
-        // Create a client with rustls
+        // Create a client with optimized settings
         let client = Client::builder()
             .use_rustls_tls()
-            .danger_accept_invalid_certs(true) // Accept self-signed certificates for development
+            .danger_accept_invalid_certs(true)
+            .pool_idle_timeout(Some(std::time::Duration::from_secs(30)))
+            .pool_max_idle_per_host(32)
+            .tcp_nodelay(true)
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .pool_max_idle_per_host(32)
             .build()?;
 
-        // Extract upstream host from URL
         let upstream_url = config.url.clone();
         let upstream_host = Url::parse(&upstream_url)
             .map(|url| url.host_str().unwrap_or("unknown").to_string())
             .unwrap_or_else(|_| "unknown".to_string());
 
+        // Limit concurrent connections
+        let connection_pool = Arc::new(Semaphore::new(100));
+
         Ok(ProxyClient {
             client,
             upstream_url,
             upstream_host,
+            connection_pool,
         })
     }
 }
@@ -216,16 +228,38 @@ async fn proxy_handler(
     body: actix_web::web::Bytes,
     client: web::Data<ProxyClient>,
 ) -> Result<impl Responder, Error> {
+    // Acquire connection from pool with timeout
+    let _permit = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.connection_pool.acquire()
+    ).await {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(e)) => {
+            error!("Failed to acquire connection from pool: {}", e);
+            return Err(actix_web::error::ErrorServiceUnavailable("Connection pool exhausted"));
+        },
+        Err(_) => {
+            error!("Timeout acquiring connection from pool");
+            return Err(actix_web::error::ErrorServiceUnavailable("Connection pool timeout"));
+        }
+    };
+
     let upstream_url = format!("{}{}", client.upstream_url, req.uri().path());
     debug!("Proxying request to: {}", upstream_url);
     
     let mut upstream_req = client.client.request(req.method().clone(), &upstream_url);
 
-    // Copy headers
+    // Optimize header copying with pre-allocated capacity
+    let mut headers_to_copy = Vec::with_capacity(req.headers().len());
     for (name, value) in req.headers() {
-        if name != header::HOST {
-            upstream_req = upstream_req.header(name, value);
+        if name != header::HOST && name != header::CONNECTION && name != header::TRANSFER_ENCODING {
+            headers_to_copy.push((name.clone(), value.clone()));
         }
+    }
+
+    // Add headers in batch
+    for (name, value) in headers_to_copy {
+        upstream_req = upstream_req.header(name, value);
     }
 
     // Add body if present
@@ -240,8 +274,16 @@ async fn proxy_handler(
             
             let mut builder = actix_web::HttpResponse::build(status);
 
-            // Copy headers from upstream response
+            // Optimize header copying from response
+            let mut response_headers = Vec::with_capacity(response.headers().len());
             for (name, value) in response.headers() {
+                if name != header::CONNECTION && name != header::TRANSFER_ENCODING {
+                    response_headers.push((name.clone(), value.clone()));
+                }
+            }
+
+            // Add headers in batch
+            for (name, value) in response_headers {
                 builder.append_header((name, value));
             }
 
@@ -290,6 +332,10 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(proxy_client.clone()))
             .default_service(web::to(proxy_handler))
     })
+    .workers(num_cpus::get())
+    .backlog(1024)
+    .max_connections(10000)
+    .max_connection_rate(1000)
     .bind((config.server.host, config.server.port))?
     .run()
     .await
