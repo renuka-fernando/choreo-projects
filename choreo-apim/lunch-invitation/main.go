@@ -10,12 +10,6 @@ import (
 
 const MESSAGE = `
 🥪 *Hey APIM_TEAM, It's Lunch Time!* 🍽️
-Thanks for the incredible work you’ve been doing — you’ve more than earned this break! 🎉
-
-Here’s the plan:
-1. Step away and take a well-deserved break 🔔
-2. Enjoy the lunch and with fresh juice or biscuits 💧🍹
-3. Return refreshed and recharged to keep being awesome! ⚡️💪
 `
 
 func main() {
