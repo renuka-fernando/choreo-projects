@@ -6,22 +6,27 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 )
 
 const MESSAGE = `
-🥪 *Hey APIM_TEAM, It's Lunch Time!* 🍽️
+🥪 *Hey TEAM_NAME, It's Lunch Time!* 🍽️
 `
 
 func main() {
 	slog.Info("Starting lunch invitor...")
 	url := os.Getenv("GCHAT_URL")
 	message := os.Getenv("MESSAGE")
+	teamName := os.Getenv("TEAM_NAME")
 	if url == "" {
 		slog.Error("The environment variable GCHAT_URL is empty")
 		os.Exit(1)
 	}
+	if teamName == "" {
+		teamName = "APIM_TEAM"
+	}
 	if message == "" {
-		message = MESSAGE
+		message = strings.ReplaceAll(MESSAGE, "TEAM_NAME", teamName)
 	}
 
 	payload := map[string]string{"text": message}
